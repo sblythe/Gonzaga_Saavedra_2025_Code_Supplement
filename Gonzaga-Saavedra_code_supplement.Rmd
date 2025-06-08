@@ -1,0 +1,1911 @@
+---
+title: "Gonzaga-Saavedra 2025 Code Supplement"
+author: "Shelby Blythe"
+date: "2025-06-07"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+This code supplement will reproduce the analyses reported in Gonzaga-Saavedra 2025. 
+
+# Load Data
+
+The necessary datasets for reproducing the data are loaded here. To make this most portable, we have generated RDS formatted versions of peaks lists that have been submitted to GEO and have provided counts tables for the GAF and Zelda mutant/knockdown experiments to avoid needing to repeat counting from raw .bam files. 
+
+The first filepath below should be changed to the relevant filepath on your system where this repository has been cloned. Provided the filenames of the data themselves do not change, the outcome of this first chunk should be the error-free loading of the necessary datasets. 
+
+```{r}
+rm(list = ls()); invisible(gc());
+
+# load libraries and packages needed:
+
+suppressPackageStartupMessages({
+  library(GenomicRanges)
+  library(tidyverse)
+  library(DESeq2)
+  library(BSgenome.Dmelanogaster.UCSC.dm6)
+  library(Rsamtools)
+  library(GenomicAlignments)
+})
+
+# Filepath to parental data directory:
+
+d = "~/Dropbox/Blythe Lab/Manuscripts/Gonzaga-Saavedra/Github_Repo/Gonzaga_Saavedra_2025_Code_Supplement/Data/"
+
+# E(z) peaks:
+
+ez = readRDS(paste0(d, "Ez_peaks.RDS"))
+
+# Pho peaks:
+
+pho = readRDS(paste0(d, "Pho_peaks.RDS"))
+
+# Cg peaks:
+
+cg = readRDS(paste0(d, "Cg_peaks.RDS"))
+
+# GAF peaks:
+
+gaf = readRDS(paste0(d, "GAF_peaks.RDS"))
+
+# Zld peaks (Harrison et al, lifted-over to dm6):
+
+zld = readRDS(paste0(d, "Eisen_3h_Zld_peaks.RDS"))
+
+# PcG Domains:
+
+domains = readRDS(paste0(d, "NC14_PcG_Domains.RDS"))
+
+# Pol2 engagement with zygotic only genes (Chen/Zeitlinger 2013)
+
+zygtss = readRDS(paste0(d, "Chen_eLife_2013_zygotic_only_TSS.RDS"))
+
+# Pol2 engagement with maternal-zygotic and zygotic-only genes (Chen/Zeitlinger 2013)
+
+matzyg = readRDS(paste0(d, "Chen_eLife_2013_maternal_and_zygotic_TSS.RDS"))
+
+# Sampling of ATAC data from NC11-NC13 to estimate timing of peak accessibility.
+
+atac = readRDS(paste0(d, "NC11-13_ATAC.RDS"))
+
+# count matrices for DESeq analysis
+
+gafcts = readRDS(paste0(d, "count_matrices_gafKD.RDS"))
+zldcts = readRDS(paste0(d, "count_matrices_zld.RDS"))
+
+# the supplied gaf counts are just for the H3K27me3 experiment. The Zelda experiment on the other hand contains counts for H3K27me3, H2Aub, RNA Pol 2, H3K27ac, and H3K4me2. The following indexing variables identify the columns in the zelda experiment for each respective ChIP. 
+
+k27I = c(1:8)
+h2aI = c(9:12)
+ezI = c(13:18)
+polI = c(19:22)
+acI = c(23:28)
+k4I = c(29:32)
+
+# Next we have some helper functions:
+
+# the function below appends a UCSC-friendly name to each range
+
+namer = function(cts){
+    names(cts) = paste0(seqnames(cts), ":", start(cts), "-", end(cts))
+    return(cts)
+}
+
+# the function below cleans up a GRanges object to be limited to canonical
+# chromosomes, to all be the same width, and fixes the reference genome info
+# appended to the object. 
+
+cleanup = function(b, sizer = TRUE){
+    b = b[seqnames(b) %in% paste0('chr', c('2L','2R','3L','3R','4','X'))]
+    if(sizer){b = b[width(b) == median(width(b))]}
+    seqlevels(b) = seqlevels(Dmelanogaster)
+    seqinfo(b) = seqinfo(Dmelanogaster)
+    seqlevels(b) = seqlevelsInUse(b)
+    genome(b) = 'dm6'
+    return(b)
+}
+```
+
+Now that the data are loaded, we can perform calculations:
+
+# Calculations
+
+## E(z) occurence in PcG Domains and co-occurrence with TF binding events
+
+For the first section of the paper, we report numbers related to E(z) occupancy in the genome and co-occurrence with selected transcription factors. 
+
+The total number of E(z) peaks:
+
+```{r}
+length(ez)
+```
+
+To calculate the fraction of these peaks that overlap with either Pho, Cg, GAF, or Zld, we can append a logical vector reporting these overlaps to the E(z) peaks list. 
+
+```{r}
+ez$withPho = as.logical(countOverlaps(ez, pho))
+ez$withCg = as.logical(countOverlaps(ez, cg))
+ez$withGAF = as.logical(countOverlaps(ez, gaf))
+ez$withZld = as.logical(countOverlaps(ez, zld))
+```
+
+This method of counting overlaps just reports "any" overlap. One peak for one factor can overlap with one or more of the other, and it is scored as an overlap. 
+
+In the manuscript, we note the overall overlap of an E(z) peak with one or more of any of these four factors. To calculate this:
+
+```{r}
+table(ez$withPho | ez$withCg | ez$withGAF | ez$withZld)[2]
+table(ez$withPho | ez$withCg | ez$withGAF | ez$withZld)[2]/length(ez)
+```
+
+There are 3966 peaks that overlap with one or more of these factors, and this accounts for 87% of the E(z) peaks overall. 
+
+## PcG domain features
+
+We reckon "PcG Domains" using a HMM tool to identify tracts of high H3K27me3 signal in NC14L chromatin. How many do we have?
+
+```{r}
+length(domains)
+```
+
+What is their median length? 
+
+```{r}
+median(width(domains))
+```
+
+Size range? 
+
+```{r}
+range(width(domains))
+```
+
+Mean width
+
+```{r}
+mean(width(domains))
+```
+
+How many domains contain one (or more) E(z) peaks? 
+
+```{r}
+table(as.logical(countOverlaps(domains, ez)))[2]
+table(as.logical(countOverlaps(domains, ez)))[2]/length(domains)
+```
+
+How many E(z) peaks are found within Domains? 
+
+```{r}
+table(as.logical(countOverlaps(ez, domains)))[2]
+table(as.logical(countOverlaps(ez, domains)))[2]/length(ez)
+```
+
+We report the fraction not within domains:
+
+```{r}
+table(as.logical(countOverlaps(ez, domains)))[1]
+table(as.logical(countOverlaps(ez, domains)))[1]/length(ez)
+```
+
+## E(z) peak engagement with TSS
+
+We will now append "domain" and "tss" membership with each E(z) peak. 
+
+```{r}
+ez$domain = as.logical(countOverlaps(ez, domains))
+ez$tss = as.logical(countOverlaps(ez, matzyg))
+```
+
+This list of TSS is curated from Chen et al 2013, and contains both the maternal-zygotic and zygotic-only TSS. 
+
+```{r}
+length(matzyg)
+```
+
+This accounts for 3917 total promoters. 
+
+What fraction of E(z) peaks associate with an active TSS? 
+
+```{r}
+table(ez$tss)
+```
+
+There are 1668 E(z) peaks that engage with one or more active TSS at NC14. Does it make a difference if the E(z) peak is in a domain or not? 
+
+```{r}
+table(ez$tss, ez$domain)[c(2:1), c(2:1)]
+```
+
+```{r}
+fisher.test(table(ez$tss, ez$domain)[c(2:1), c(2:1)])
+```
+
+There is a substantial enrichment for E(z) binding outside of domains at TSS sites. Here's the exact p-value and log2 transformed odds ratio:
+
+```{r}
+fisher.test(table(ez$tss, ez$domain)[c(2:1), c(2:1)])$p.value
+
+log2(fisher.test(table(ez$tss, ez$domain)[c(2:1), c(2:1)])$estimate)
+```
+
+Because of the way that I phrased the contingency table for this test, the resulting odds ratio reports "enrichment of *in domain* and *is tss*" so we see a negative odds ratio indicating that there is a strong enrichment for E(z) binding not in PcG domains at TSS. 
+
+A stacked barplot with this information:
+
+```{r}
+s = as.data.frame(ez) %>% 
+    select(inDomain, tss) %>% 
+    ggplot(aes(x = inDomain, fill = tss)) +
+    geom_bar(position = 'stack', show.legend = FALSE) +
+    scale_fill_manual(values = c("cornflowerblue","brown4")) +
+    labs(x = "domain membership", y = "n E(z) peaks", title = "E(z) peaks in promoters active at ZGA") +
+    ggthemes::theme_clean()
+s
+```
+```{r, eval = FALSE, echo = FALSE}
+ggsave(s, filename = "/Volumes/BlytheLab_Files/HTSeq/Natalie/paper_files/figures/Figure_1/supplement/FigS1_Barplot_Ez_domains_tss.eps", device = 'eps', width = 6, height = 6, dpi = 300, units = 'cm')
+```
+
+
+## Table 1:
+
+For table 1, we ask whether co-binding of E(z) with other transcription factors disproportionately correlates with an E(z) peak acquiring H3K27me3. We report the overlap of a factor with any E(z) peak, with an E(z) peak within a domain, and a fisher's exact test result. 
+
+```{r}
+cat("Pho\n")
+test = ez$withPho
+
+sum(test)
+sum(test)/length(ez)
+
+sum(test[ez$domain])
+sum(test[ez$domain])/sum(ez$domain)
+
+fisher.test(table(test, ez$domain)[c(2:1), c(2:1)])$p.value
+log2(fisher.test(table(test, ez$domain)[c(2:1), c(2:1)])$estimate)
+```
+
+```{r}
+cat("Cg\n")
+test = ez$withCg
+
+sum(test)
+sum(test)/length(ez)
+
+sum(test[ez$domain])
+sum(test[ez$domain])/sum(ez$domain)
+
+fisher.test(table(test, ez$domain)[c(2:1), c(2:1)])$p.value
+log2(fisher.test(table(test, ez$domain)[c(2:1), c(2:1)])$estimate)
+```
+
+```{r}
+cat("GAF\n")
+test = ez$withGAF
+
+sum(test)
+sum(test)/length(ez)
+
+sum(test[ez$domain])
+sum(test[ez$domain])/sum(ez$domain)
+
+fisher.test(table(test, ez$domain)[c(2:1), c(2:1)])$p.value
+log2(fisher.test(table(test, ez$domain)[c(2:1), c(2:1)])$estimate)
+```
+
+```{r}
+cat("Zelda\n")
+test = ez$withZld
+
+sum(test)
+sum(test)/length(ez)
+
+sum(test[ez$domain])
+sum(test[ez$domain])/sum(ez$domain)
+
+fisher.test(table(test, ez$domain)[c(2:1), c(2:1)])$p.value
+log2(fisher.test(table(test, ez$domain)[c(2:1), c(2:1)])$estimate)
+```
+
+```{r}
+cat("Pho and Zelda\n")
+test = ez$withPho & ez$withZld
+
+sum(test)
+sum(test)/length(ez)
+
+sum(test[ez$domain])
+sum(test[ez$domain])/sum(ez$domain)
+
+fisher.test(table(test, ez$domain)[c(2:1), c(2:1)])$p.value
+log2(fisher.test(table(test, ez$domain)[c(2:1), c(2:1)])$estimate)
+```
+
+```{r}
+cat("Pho and GAF\n")
+test = ez$withPho & ez$withGAF
+
+sum(test)
+sum(test)/length(ez)
+
+sum(test[ez$domain])
+sum(test[ez$domain])/sum(ez$domain)
+
+fisher.test(table(test, ez$domain)[c(2:1), c(2:1)])$p.value
+log2(fisher.test(table(test, ez$domain)[c(2:1), c(2:1)])$estimate)
+```
+
+```{r}
+cat("Pho and Cg\n")
+test = ez$withPho & ez$withCg
+
+sum(test)
+sum(test)/length(ez)
+
+sum(test[ez$domain])
+sum(test[ez$domain])/sum(ez$domain)
+
+fisher.test(table(test, ez$domain)[c(2:1), c(2:1)])$p.value
+log2(fisher.test(table(test, ez$domain)[c(2:1), c(2:1)])$estimate)
+```
+
+```{r}
+cat("Zld and GAF\n")
+test = ez$withZld & ez$withGAF
+
+sum(test)
+sum(test)/length(ez)
+
+sum(test[ez$domain])
+sum(test[ez$domain])/sum(ez$domain)
+
+fisher.test(table(test, ez$domain)[c(2:1), c(2:1)])$p.value
+log2(fisher.test(table(test, ez$domain)[c(2:1), c(2:1)])$estimate)
+```
+
+```{r}
+cat("Zld and Cg\n")
+test = ez$withZld & ez$withCg
+
+sum(test)
+sum(test)/length(ez)
+
+sum(test[ez$domain])
+sum(test[ez$domain])/sum(ez$domain)
+
+fisher.test(table(test, ez$domain)[c(2:1), c(2:1)])$p.value
+log2(fisher.test(table(test, ez$domain)[c(2:1), c(2:1)])$estimate)
+```
+
+```{r}
+cat("Cg and GAF\n")
+test = ez$withCg & ez$withGAF
+sum(test)
+sum(test)/length(ez)
+
+sum(test[ez$domain])
+sum(test[ez$domain])/sum(ez$domain)
+
+fisher.test(table(test, ez$domain)[c(2:1), c(2:1)])$p.value
+log2(fisher.test(table(test, ez$domain)[c(2:1), c(2:1)])$estimate)
+```
+
+Overall, the individual and dual factor enrichment demonstrates that Pho is slightly enriched at E(z) peaks that contribute to domains, but the surprise here is that Zelda shows the strongest of enrichments at H3K27me3 domains. 
+
+In the reporting of Table 1, we include only individual and pair-wise comparisons that yield a significant fisher's p-value. Cg+Zld, Pho+GAF, and Pho+Cg do not yield a significant p-value.
+
+## Chromatin Accessibility over prospective PREs. (Table 2)
+
+To estimate when an E(z) peak likely first acquires chromatin accessibility, we take a set of ATAC-seq measurements spanning NC11 through NC13 and estimate when an E(z) peak first gains accessibility. To do this, we determine the 95th percentile ATAC score for each E(z) peak at each timepoint (rather than averaging or taking the maximum value) and we perform clustering. The clusters identify 'time groups' that correlate with timing of chromatin accessibility.  
+
+```{r}
+# above, we loaded the atac data (bigwigs) as a GRangesList. Here we make a counts table.
+
+tab = data.frame(
+  NC11 = score(atac[[1]]),
+  NC12 = score(atac[[2]]),
+  NC13 = score(atac[[3]]),
+  overEz = rep(NA, length(atac[[1]]))
+)
+
+overEz = findOverlaps(atac[[1]], ez[ez$domain])
+tab$overEz[queryHits(overEz)] = subjectHits(overEz)
+
+# now we group by peak and report the 95th percentile score at each timepoint to a table:
+
+zez = tab %>% 
+  filter(!is.na(overEz)) %>% 
+  group_by(overEz) %>% 
+  summarize(z11 = quantile(NC11, 0.95), z12 = quantile(NC12, 0.95), z13 = quantile(NC13, 0.95))
+
+# calculate the distance metric, dropping the column with the peak ID:
+
+dd = dist(zez[,-1])
+
+# perform clustering, using "ward.D" method
+
+set.seed(123)
+h = hclust(dd, method = "ward.D")
+
+# we are looking for four categories, so we use cutree to make four groups
+
+k4 = cutree(h, k = 4)
+
+# now we add the cluster identities to the table of peaks:
+
+zez$clust = as.factor(k4)
+
+# tidy the levels
+
+levels(zez$clust) = c("nc12", "nc13", "nc14", "nc11")
+
+zez$clust = relevel(zez$clust, ref = "nc11")
+
+# view membership:
+
+table(zez$clust)
+table(zez$clust)/nrow(zez)
+```
+
+We can visualize the changes in accessibility by timepoint and by group with a simple graph:
+
+```{r}
+zez %>% 
+  group_by(clust) %>% 
+  summarize(k11 = mean(z11), k12 = mean(z12), k13 = mean(z13)) %>% 
+  pivot_longer(cols = c(k11, k12, k13), values_to = "score", names_to = 'stage') %>% 
+  ggplot(aes(x = stage, y = score, color = clust, group = clust)) +
+  geom_line(linewidth = 2) +
+  geom_point(size = 5) +
+  scale_color_manual(values = rainbow(length(unique(k4))))
+```
+
+We can now transfer these clustering information to the `domains` object.
+
+```{r}
+pPRE = as.data.frame(ez[ez$domain])
+pPRE$clust = as.factor(zez$clust)
+
+pPRE = GRanges(pPRE)
+
+domover = findOverlaps(pPRE, domains)
+
+pPRE$domainI[queryHits(domover)] = subjectHits(domover)
+
+# pPRE
+```
+
+To calculate on a per-domain basis the earliest accessible E(z) region:
+
+```{r}
+as.data.frame(pPRE) %>% 
+  dplyr::select(clust, domainI) %>% 
+  group_by(domainI) %>% 
+  mutate(earliest = case_when(
+    any(clust == 'nc11') ~ "nc11",
+    any(clust == 'nc12') ~ "nc12",
+    any(clust == 'nc13') ~ "nc13", 
+    any(clust == 'nc14') ~ "nc14"
+  )) %>% 
+  dplyr::summarize(e = unique(earliest)) %>%
+  mutate(total = dplyr::n()) %>% 
+  ungroup() %>% 
+  group_by(e) %>% 
+  summarize(n = dplyr::n(), pct = dplyr::n()/unique(total))
+```
+
+This indicates that at the domain-level, there appears to be an enrichment of domains having at least one early-opening pPRE. This is currently reported in the manuscript as a table. The barplot is sort of a striking visual indicator of the magnitude of this effect.
+
+```{r}
+# I can't be bothered to code this from the raw tables:
+
+x = rbind(c(10.6, 15.9, 26.3, 47.1), c(36.3, 29.5, 23.2, 10.9))
+colnames(x) = paste0("nc", c("11", "12", "13", "14"))
+barplot(x, beside = TRUE, col = c("cornflowerblue", "darkblue"), las = 1, ylab = "percent newly open", main = "timing of pPRE accessibility", ylim = c(0,50))
+legend("topleft", legend = c("individual pPRE", "earliest in domain"), fill = c("cornflowerblue", "darkblue"))
+
+```
+
+We can formally demonstrate the statistical significance of this observation using a chi-squared test for given probabilities:
+
+```{r}
+chisq.test(x = c(86, 70, 55, 26), p = c(134/1264, 201/1264, 333/1264, 596/1264))$p.value
+chisq.test(x = c(86, 70, 55, 26), p = c(134/1264, 201/1264, 333/1264, 596/1264))$method
+```
+
+# GAF and Zelda 
+
+## Method Description
+
+There are two main experiments where DESeq2 is used to perform a comparison. Experiment 1 measures changes in H3K27me3 following knockdown of GAGA-Factor (GAF). Experiment 2 measures changes in H3K27me3 in zelda mutants.
+
+For both of these analyses, we rely on counting ChIP signal from each experimental condition/replicate over 2-kb bins covering the whole genome. These bins are annotated with membership/overlap with genomic annotations, including ChIP-seq peaks for transcription factors, transcriptional start sites, membership in a Polycomb Group (PcG) Domain, et cetera. The bins are defined using GenomicRanges::tileGenome and these are filtered to remove low-count bins. Because the bins are filtered for low-count regions, certain features that are present in the whole genome annotations may be missing in the final DESeq dataset. Principal component analysis (PCA) is next performed to evaluate for the presence of batch effects in the data. In this implementation, a ‘batch effect’ is defined as a non-biological or unknown contribution to a significant fraction of the sample variance, as determined by PCA. Principal components capturing a significant unexplained source of variance are added to the sample metadata for inclusion in the DESeq analysis model. The method for model fitting used by DESeq is optimized by estimating dispersions using the three model fit types (parametric, local, or mean), calculating mean absolute residual values for the fittings. The fit method with the smallest mean absolute residual value is then chosen for DESeq analysis. In this study, the “local” fitting method provided slightly lower mean absolute residual values than the “parametric” method. DESeq2 is then performed on the filtered counts table, using a model of ~ batch + genotype if a batch effect is observed, or simply ~ genotype if no batch effect is observed, and a Wald test is performed to identify bins with differential enrichment between genotypes.
+
+The DESeq results are recovered for the by-genotype comparison (mutant over wild-type). These raw DESeq results identify 2-kb bins that can be scored as significant by typical methods, i.e., thresholding for an absolute log2 fold-change (LFC) greater than one, and an adjusted p-value less than 0.05. However, because changes in H3K27me3 signal can potentially span a sequential series or run of 2-kb bins, it is convenient to identify such runs of adjacent bins passing a significance test threshold. To identify runs of bins, the DESeq results table was filtered for bins with a adjusted p-value less than 0.05 and converted to a GenomicRanges object. Note, the magnitude-of-effect estimator, LFC, was not used as a thresholding parameter for identifying runs of significant bins. Adjacent bins were merged through an implementation of dialysis, reduction, and erosion: filtered bin starts and ends were extended outward by one bp to create one bp overlaps between adjacent bins. Overlapping bins were merged using the GenomicRanges::reduce function, and then one bp was subtracted from the ends of the resulting table. DESeq measurements (baseMean, LFC, and adjusted p-value) were propagated to the merged bins as follows. 2-kb bins overlapping the runs of bins were identified, and baseMean and LFC values for the overlapping 2-kb bins were averaged and assigned to the run. To propagate the adjusted p-value measurements, we used Fisher’s method, calculating the chi-squared test statistic by summing the natural logarithms of the adjusted p-values and multiplying by negative two.
+
+Significant 2-kb bins or runs of bins were scored for membership in PcG domains by measuring any overlap between a bin or run and an annotated PcG Domain.
+
+## Implementation
+
+```{r make 2k bins}
+# make a set of 2k bins to use for DESeq analysis
+
+bins2k = namer(cleanup(tileGenome(seqlengths(Dmelanogaster), tilewidth = 2000, cut.last.tile.in.chrom = TRUE)))
+
+# find which bins overlap with PcG domains
+
+bod = findOverlaps(bins2k, domains)
+
+# associate bins with additional peak sets of interest.
+
+bins2k$withZld = as.logical(countOverlaps(bins2k, zld))
+bins2k$withGAF = as.logical(countOverlaps(bins2k, gaf))
+bins2k$withPho = as.logical(countOverlaps(bins2k, pho))
+bins2k$withEz = as.logical(countOverlaps(bins2k, ez))
+bins2k$withTSS = as.logical(countOverlaps(bins2k, zygtss))
+
+# assign overlapping zygotic TSS IDs and PcG domains with bins.
+
+bot = findOverlaps(bins2k, zygtss)
+concordance = tapply(zygtss$fb_symbol[subjectHits(bot)], queryHits(bot), function(x){
+    paste0(x, collapse = ", ")
+})
+bins2k$tssName = rep(NA, length(bins2k))
+bins2k$tssName[as.numeric(names(concordance))] = concordance
+
+bins2k$inDomain = rep(NA, length(bins2k))
+bins2k$inDomain[queryHits(bod)] = names(domains)[subjectHits(bod)]
+
+head(bins2k)
+```
+
+With these bins and count tables, we can now perform an analysis for both the GAF and the Zelda experiments. 
+
+### Filtering Low Count Bins
+
+For each experiment, we will calculate the sum of reads in each bin and filter out bins with low reads. To do this, we calculate the rowSums for bins in PcG domains and bins outside of PcG Domains, log10 transform, and plot a histogram. This should allow us to eyeball a cutoff where we just nick off the lower tail of the bins within domains.
+
+Rationale: the signal should be concentrated within Domains. Therefore, we use the distribution of bins within domains as our guide for thresholding.
+
+#### GAF
+
+```{r}
+hist(log10(rowSums(gafcts[is.na(bins2k$inDomain),] + 1)), breaks = 1000, main = "GAF: distribution of 2k bin row sums H3K27me3", freq = TRUE, xlim = c(0, 5), xlab = "log10(summed bin counts + 1)")
+hist(log10(rowSums(gafcts[!is.na(bins2k$inDomain),] + 1)), breaks = 200, add = TRUE, col = 'red', border = 'red', freq = TRUE)
+abline(v = 3.12, col = 'magenta', lty = 'dashed')
+```
+
+```{r}
+gafthresh = 10^3.12
+```
+
+The eyeballed threshold is 1e+3.12, so we apply this to our counts table and filter out low-count bins.
+
+```{r}
+gafcts = gafcts[rowSums(gafcts) > gafthresh,]
+```
+
+#### zld
+
+For the Zelda comparisons, we are interested in H3K27me3 as well as other modifications/ChIP results.
+
+##### zld H3K27me3
+
+First, H3K27me3
+
+```{r}
+hist(log10(rowSums(zldcts[is.na(bins2k$inDomain), k27I] + 1)), breaks = 1000, main = "Zld: distribution of 2k bin row sums K27me3", xlim = c(0,5))
+hist(log10(rowSums(zldcts[!is.na(bins2k$inDomain),k27I] + 1)), breaks = 200, col = 'red', border = 'red', add = TRUE)
+abline(v = 3.33, col = 'magenta', lty = 'dashed')
+```
+
+```{r}
+zldthresh = 10^3.33
+```
+
+Here we show the distribution for the K27me3 data, but below, we filter the zelda counts table by the set of bins that are in common to the K27me3, H2Aub, and E(z) counts tables at a threshold of 1e+3.33.
+
+```{r}
+zldorig = zldcts
+
+keepers = apply(
+    cbind(bad1 = rowSums(zldcts[,k27I]) > zldthresh,
+          bad2 = rowSums(zldcts[,h2aI]) > zldthresh,
+          bad3 = rowSums(zldcts[,ezI]) > zldthresh
+    ), 1, all)
+
+zld2a = zldcts[keepers, h2aI]
+zldcts = zldcts[keepers, k27I]
+```
+
+##### zld Pol2
+
+We use the zld Pol2 ChIP experiment mainly to explore the distribution of zelda-dependent zygotic TSS across the PcG domains. It is less important that this counts table corresponds exactly with the modifications above.
+
+```{r}
+hist(log10(rowSums(zldorig[is.na(bins2k$inDomain), polI] + 1)), breaks = 1000, main = "Zld: distribution of 2k bin row sums RNA Pol2", xlim = c(0,5))
+hist(log10(rowSums(zldorig[!is.na(bins2k$inDomain), polI] + 1)), breaks = 200, col = 'red', border = 'red', add = TRUE)
+abline(v = 2.7, col = 'magenta', lty = 'dashed')
+```
+
+```{r}
+zldPthresh = 10^2.7
+```
+
+```{r}
+zldpol = zldorig[, polI]
+zldpol = zldpol[rowSums(zldpol) > zldPthresh,]
+```
+
+##### zld H2Aub
+We do not do much with the H2Aub data in this manuscript but it is useful to compare between H3K27me3 and H2Aub to ask whether there are correlations in effects at sites that have reduced/increased modifications following loss of Zelda. 
+
+```{r}
+hist(log10(rowSums(zldorig[is.na(bins2k$inDomain), h2aI] + 1)), breaks = 1000, main = "Zld: distribution of 2k bin row sums H2Aub", xlim = c(0,5))
+hist(log10(rowSums(zldorig[!is.na(bins2k$inDomain), h2aI] + 1)), breaks = 200, col = 'red', border = 'red', add = TRUE)
+abline(v = 3.33, col = 'magenta', lty = 'dashed')
+```
+
+The distributions are close between the H3K27me3 and H2Aub datasets, so to ensure maximal overlap between the analyses, and because we just want to compare this data to the H3K27me3 data, we will count H2Aub over the same set of bins available for the H3K27me3 analysis. This object `zld2a` was defined above containing the H2Aub datasets. 
+
+We are now set to evaluate batch effects.
+
+### Evaluating batch effects
+
+To do this, we initiate the DESeq object for each analysis and first perform a PCA.
+
+#### GAF
+
+```{r}
+coldataG = data.frame(sample = colnames(gafcts), 
+                       genotype = factor(rep(c("wt", "gaf"), 3),levels = c('wt','gaf'))
+                       )
+
+rownames(coldataG) = coldataG$sample
+
+ddsG = DESeqDataSetFromMatrix(countData = gafcts, colData = coldataG, design = ~ genotype)
+
+rld= rlog(ddsG, blind=FALSE, fitType = "local")
+
+pca= plotPCA(rld, intgroup = c("genotype"), returnData = TRUE)
+percentVar= round(100* attr(pca, "percentVar"))
+
+ggplot(pca, aes(PC1,PC2, color= genotype))+
+  geom_point(size=4, alpha=0.7)+
+  xlab(paste0("PC1: ", percentVar[1], "% variance")) +
+  ylab(paste0("PC2: ", percentVar[2], "% variance")) +
+  scale_color_manual(values= c("azure3", "cornflowerblue"))+ theme(axis.line = element_line(color = "black"))+
+  theme_bw()+
+  coord_equal() +
+   xlim(-10, 10) +
+   ylim(-10, 10) +
+  labs(title = "PCA 2k bins, GAF")
+```
+
+Here we see that the first principal component identifies some kind of batch effect, and that the second PC picks up genotype-specific differences. Normally this would be a concern, but as we see in the reported results, the GAF KD does not have a strong effect on the K27me3.
+
+We can account for this batch effect by appending the numeric value of PC1 to the coldataG object and re-specifying the DESeq object with the updated design.
+
+```{r}
+coldataG$pc1 = pca$PC1
+
+ddsG = DESeqDataSetFromMatrix(countData = gafcts, colData = coldataG, design = ~ pc1 + genotype)
+```
+
+#### zld
+##### H3K27me3
+
+We repeat the same approach as above for the Zld K27me3 samples. Note, we over-write variables below.
+```{r}
+coldataZ = data.frame(sample = colnames(zldcts), 
+                       genotype = factor(rep(c("wt", "zld"), each = 4),levels = c('wt','zld'))
+                       )
+
+rownames(coldataZ) = coldataZ$sample
+
+ddsZ = DESeqDataSetFromMatrix(countData = zldcts, colData = coldataZ, design = ~ genotype)
+
+rld= rlog(ddsZ, blind=FALSE, fitType = "local")
+
+pca= plotPCA(rld, intgroup = c("genotype"), returnData = TRUE)
+percentVar= round(100* attr(pca, "percentVar"))
+
+ggplot(pca, aes(PC1,PC2, color= genotype))+
+  geom_point(size=4, alpha=0.7)+
+  xlab(paste0("PC1: ", percentVar[1], "% variance")) +
+  ylab(paste0("PC2: ", percentVar[2], "% variance")) +
+  scale_color_manual(values= c("azure3", "cornflowerblue"))+ theme(axis.line = element_line(color = "black"))+
+  theme_bw()+
+  coord_equal() +
+   xlim(-10, 10) +
+   ylim(-10, 10) +
+  labs(title = "PCA 2k bins, zld")
+```
+
+This is better, and reflects a stronger influence of Zld on the K27me3 deposition, as we will soon see. Nevertheless, PC2 accounts for 13% of the variance, and likely represents some kind of a batch effect in these data. We will account for it as we did above.
+```{r}
+coldataZ$pc2 = pca$PC2
+
+ddsZ = DESeqDataSetFromMatrix(countData = zldcts, colData = coldataZ, design = ~ pc2 + genotype)
+```
+
+#### RNA Pol2
+```{r}
+coldataZp = data.frame(sample = colnames(zldpol), 
+                       genotype = factor(rep(c("wt", "zld"), each = 2),levels = c('wt','zld'))
+                       )
+
+rownames(coldataZp) = coldataZp$sample
+
+ddsZp = DESeqDataSetFromMatrix(countData = zldpol, colData = coldataZp, design = ~ genotype)
+
+rld= rlog(ddsZp, blind=FALSE, fitType = "local")
+
+pca= plotPCA(rld, intgroup = c("genotype"), returnData = TRUE)
+percentVar= round(100* attr(pca, "percentVar"))
+
+ggplot(pca, aes(PC1,PC2, color= genotype))+
+  geom_point(size=4, alpha=0.7)+
+  xlab(paste0("PC1: ", percentVar[1], "% variance")) +
+  ylab(paste0("PC2: ", percentVar[2], "% variance")) +
+  scale_color_manual(values= c("azure3", "cornflowerblue"))+ theme(axis.line = element_line(color = "black"))+
+  theme_bw()+
+  coord_equal() +
+   xlim(-23, 23) +
+   ylim(-23, 23) +
+  labs(title = "PCA 2k bins, zld, Pol2")
+```
+
+There does not seem to be a significant batch effect for the Pol2 data. 
+
+##### H2Aub
+```{r}
+coldataZ2a = data.frame(sample = colnames(zld2a), 
+                       genotype = factor(rep(c("wt", "zld"), each = 2),levels = c('wt','zld'))
+                       )
+
+rownames(coldataZ2a) = coldataZ2a$sample
+
+ddsZ2a = DESeqDataSetFromMatrix(countData = zld2a, colData = coldataZ2a, design = ~ genotype)
+
+rld= rlog(ddsZ2a, blind=FALSE, fitType = "local")
+
+pca= plotPCA(rld, intgroup = c("genotype"), returnData = TRUE)
+percentVar= round(100* attr(pca, "percentVar"))
+
+ggplot(pca, aes(PC1,PC2, color= genotype))+
+  geom_point(size=4, alpha=0.7)+
+  xlab(paste0("PC1: ", percentVar[1], "% variance")) +
+  ylab(paste0("PC2: ", percentVar[2], "% variance")) +
+  scale_color_manual(values= c("azure3", "cornflowerblue"))+ theme(axis.line = element_line(color = "black"))+
+  theme_bw()+
+  coord_equal() +
+  xlim(-15, 15) +
+  ylim(-15, 15) +
+  labs(title = "PCA 2k bins, zld")
+```
+
+There does not appear to be a substantial batch effect for the H2Aub data. We now need to evaluate the optimal fit for the DESeq model.
+
+### Estimating an optimal DESeq fit type
+We want to estimate dispersions using the three available fit types and determine the minimal mean absolute residual derived from these fittings. In practice, the ‘parametric’ model sometimes does not fit well, and it defaults to “local”.
+
+#### GAF
+```{r}
+ddsG = estimateSizeFactors(ddsG)
+parG = estimateDispersions(ddsG, fitType = "parametric", maxit = 500, quiet = TRUE)
+locG = estimateDispersions(ddsG, fitType = "local", quiet = TRUE)
+meaG = estimateDispersions(ddsG, fitType = "mean", quiet = TRUE)
+```
+
+Now we calculate the mean absolute residual and choose the model with the minimum value.
+```{r}
+c(parametric = median(abs(mcols(parG)$dispGeneEst - mcols(parG)$dispFit)),
+  local = median(abs(mcols(locG)$dispGeneEst - mcols(locG)$dispFit)), 
+  mean = median(abs(mcols(meaG)$dispGeneEst - mcols(meaG)$dispFit)))
+```
+
+In this case the local fit minimizes the mean absolute residual. These differences don’t seem huge though…
+```{r}
+plotDispEsts(locG, main = "GAF Local Fit Dispersion Estimates")
+```
+
+#### zld
+```{r}
+ddsZ = estimateSizeFactors(ddsZ)
+parZ = estimateDispersions(ddsZ, fitType = "parametric", maxit = 500, quiet = TRUE)
+locZ = estimateDispersions(ddsZ, fitType = "local", quiet = TRUE)
+meaZ = estimateDispersions(ddsZ, fitType = "mean", quiet = TRUE)
+```
+
+The warning tells us that parametric isn't going to cut it, so in this case we'd probably only be considering either local or mean fitting.
+```{r}
+c(parametric = median(abs(mcols(parZ)$dispGeneEst - mcols(parZ)$dispFit)),
+  local = median(abs(mcols(locZ)$dispGeneEst - mcols(locZ)$dispFit)), 
+  mean = median(abs(mcols(meaZ)$dispGeneEst - mcols(meaZ)$dispFit)))
+```
+
+And again local fitting has the lowest mean absolute residuals. 
+```{r}
+plotDispEsts(locZ, main = "Zelda Local Fit Dispersion Estimates")
+```
+
+We will do a local fit type for the zld Pol2 data.
+
+Now we are ready to do DESeq2.
+
+### DESeq2
+
+Above, we determined that both experiments should use the local fit type for the DESeq step. We will perform the DESeq using a Wald test and a local fit. We will calculate a results table and apply a log2(FoldChange) shrink to minimize effects from low mean count regions on the Log2(FC) measurement. Then we will associate the results table with the annotations in our 2-kb bins. To do this, we will need a minimized data.frame of the bin metadata, plus the bin name identifiers:
+```{r}
+bindf = as.data.frame(bins2k)
+bindf = bindf %>% 
+    rownames_to_column(var = "bin_name") %>% 
+    select(-seqnames, -start, -end, -width, -strand)
+```
+
+#### GAF
+```{r}
+ddsG = DESeq(ddsG, test = "Wald", fitType = "local", quiet = TRUE)
+
+resG = results(ddsG, contrast = c("genotype", "gaf", "wt"), independentFiltering = FALSE)
+resG = lfcShrink(dds = ddsG, res = resG, type = 'apeglm', coef = 3, quiet = TRUE)
+
+resG = as.data.frame(resG)
+
+resG= resG %>%
+    mutate(
+        baseMean = round(baseMean, 2), 
+        lfc = round(log2FoldChange, 4)
+        ) %>% 
+    rownames_to_column(var = "bin_name") %>% 
+    select(-lfcSE, -pvalue, -log2FoldChange)
+
+resG = left_join(resG, bindf)
+```
+
+#### zld
+##### H3K27me3
+```{r}
+ddsZ = DESeq(ddsZ, test = "Wald", fitType = "local", quiet = TRUE)
+resZ = results(ddsZ, contrast = c("genotype", "zld", "wt"), independentFiltering = FALSE)
+resZ = lfcShrink(dds = ddsZ, res = resZ, type = 'apeglm', coef = 3, quiet = TRUE)
+
+resZ = as.data.frame(resZ)
+
+resZ= resZ %>%
+    mutate(
+        baseMean = round(baseMean, 2), 
+        lfc = round(log2FoldChange, 4)
+        ) %>% 
+    rownames_to_column(var = "bin_name") %>% 
+    select(-lfcSE, -pvalue, -log2FoldChange)
+
+resZ = left_join(resZ, bindf)
+```
+
+##### Pol2
+```{r}
+ddsZp = DESeq(ddsZp, test = "Wald", fitType = "local", quiet = TRUE)
+resZp = results(ddsZp, contrast = c("genotype", "zld", "wt"), independentFiltering = FALSE)
+resZp = lfcShrink(dds = ddsZp, res = resZp, type = 'apeglm', coef = 2, quiet = TRUE)
+
+resZp = as.data.frame(resZp)
+
+resZp= resZp %>%
+    mutate(
+        baseMean = round(baseMean, 2), 
+        lfc = round(log2FoldChange, 4)
+        ) %>% 
+    rownames_to_column(var = "bin_name") %>% 
+    select(-lfcSE, -pvalue, -log2FoldChange)
+
+resZp = left_join(resZp, bindf)
+```
+
+##### H2Aub
+```{r}
+ddsZ2a = DESeq(ddsZ2a, test = "Wald", fitType = "local", quiet = TRUE)
+resZ2a = results(ddsZ2a, contrast = c("genotype", "zld", "wt"), independentFiltering = FALSE)
+resZ2a = lfcShrink(dds = ddsZ2a, res = resZ2a, type = 'apeglm', coef = 2, quiet = TRUE)
+
+resZ2a = as.data.frame(resZ2a)
+
+resZ2a= resZ2a %>%
+    mutate(
+        baseMean = round(baseMean, 2), 
+        lfc = round(log2FoldChange, 4)
+        ) %>% 
+    rownames_to_column(var = "bin_name") %>% 
+    select(-lfcSE, -pvalue, -log2FoldChange)
+
+resZ2a = left_join(resZ2a, bindf)
+```
+
+### Generating "Runs" of Bins
+
+We have bins above with adjusted p-values less than 0.05, and they may be adjacent to other bins with a similarly small adjusted p-value. We want now to associate these adjacent bins into continuous ‘runs’ of bins, and to reassociate with the runs the genomic features that any of the constituent bins associate with.
+
+We have below a general function that will perform this run-making operation, given a set of DESeq results and a set of original starting bins.
+```{r}
+runner = function(res, bins){
+
+    b = left_join(
+        as.data.frame(bins) %>% 
+            rownames_to_column(var = "bin_name"),
+        res %>% 
+            select(bin_name, baseMean, padj, lfc)
+        , by = 'bin_name') %>% 
+        mutate(
+        padj = case_when(
+            is.na(padj) ~ 1,
+            !is.na(padj) ~ padj
+        ),
+        baseMean = case_when(
+            is.na(baseMean) ~ 0,
+            !is.na(baseMean) ~ baseMean
+        ),
+        lfc = case_when(
+            is.na(lfc) ~ 0,
+            !is.na(lfc) ~ lfc
+        )
+        ) %>% 
+        GRanges()
+    
+    runs = b[b$padj <= 0.05]
+    
+    start(runs) = start(runs) - 1
+    end(runs) = end(runs) + 1
+    
+    runs = GenomicRanges::reduce(runs)
+    
+    start(runs) = start(runs) + 1
+    end(runs) = end(runs) - 1
+    
+    
+    overruns = findOverlaps(query = b, subject = runs)
+
+    mcols(runs) = data.frame(
+        meanBaseMean = rep(NA, length(runs)),
+        meanLFC = rep(NA, length(runs)) ,
+        fishersp = rep(NA, length(runs))
+    )
+
+    query_idx <- queryHits(overruns)
+    subject_idx <- subjectHits(overruns)
+
+    grouped_data <- split(query_idx, subject_idx)
+
+    runs$meanBaseMean <- sapply(grouped_data, function(idx) mean(b$baseMean[idx], na.rm = TRUE))
+    runs$meanLFC <- sapply(grouped_data, function(idx) mean(b$lfc[idx], na.rm = TRUE))
+
+    runs$fishersp <- sapply(grouped_data, function(idx) {
+        pchisq(q = (-2 * sum(log(b$padj[idx]))), 
+            df = 2 * length(idx), 
+            lower.tail = FALSE)
+    })
+
+    runs$ranker = rank(abs(runs$meanLFC) * log10(runs$meanBaseMean))
+    
+    runs$inDomain = rep(NA, length(runs))
+    overd = findOverlaps(runs, domains) # reference to outside data (domains)
+    runs$inDomain[queryHits(overd)] = names(domains)[subjectHits(overd)]
+    runs$withZld = as.logical(countOverlaps(runs, zld)) # reference to outside data (zld)
+    runs$withGAF = as.logical(countOverlaps(runs, gaf)) # reference to outside data (gaf)
+    runs$withPho = as.logical(countOverlaps(runs, pho)) # reference to outside data (pho)
+    runs$withEz = as.logical(countOverlaps(runs, ez)) # reference to outside data (ez)
+    
+    runs$withTSS = as.character(rep(NA, length(runs)))
+    overt = findOverlaps(runs, zygtss) # reference to outside data (zygtss)
+    concattss = tapply(zygtss$fb_symbol[subjectHits(overt)], queryHits(overt), function(x) paste0(x, collapse = ", "))
+    
+    runs$withTSS[as.numeric(names(concattss))] = concattss 
+    runs = namer(runs) # reference to outside data (namer)
+    
+    return(as.data.frame(runs))
+}
+```
+
+#### GAF
+```{r}
+runsG = runner(resG, bins2k)
+```
+
+#### zld
+```{r}
+runsZ = runner(resZ, bins2k)
+```
+
+We have above calculated runs of bins with padj < 0.05, and propagated the mean “baseMean”, “log2FoldChange” and calculated a chi-square p-value using Fisher’s method for combining p-values. We have associated the runs with domains, peaks of interest, as well as the names of zygotic TSS regions that occur within the run.
+
+### Analysis
+
+We can now visualize the distributions of calculated differential enrichment. We favor looking at the effects that happen within domains, since this is where we expect changes to be occurring, but we can also evaluate the extent of changes outside of domains as well.
+
+#### GAF
+First, by bin:
+```{r}
+resG %>% 
+    filter(!is.na(inDomain)) %>% 
+    mutate(sig = padj < 0.05 & abs(lfc) > 1) %>% 
+    mutate(tn = case_when(
+        withTSS & sig ~ tssName,
+        !(withTSS & sig) ~ NA_character_
+    )) %>% 
+    ggplot(aes(x = lfc, y = -log10(padj), col = sig, size = baseMean, label = tn)) +
+    geom_point(alpha = 0.8) + 
+    scale_color_manual(values = c("black","cornflowerblue")) +
+    xlim(-4.5, 4.5) +
+    ylim(0, 40) +
+    coord_equal(ratio = (9/40)) +
+    geom_hline(yintercept = -log10(0.05), col = 'blue', linetype = 'dashed') +
+    geom_vline(xintercept = c(-1, 1), col = 'blue', linetype = 'dashed') +
+    scale_size_area() +
+    ggrepel::geom_label_repel(show.legend = FALSE, 
+                             box.padding = 0.8, 
+                             max.overlaps = 1e+5, 
+                             size = 2, 
+                             color = "brown3",
+                             na.rm = TRUE
+                             )
+```
+
+```{r export figure for supplement, eval = FALSE, echo = FALSE}
+p = resG %>% 
+    filter(!is.na(inDomain)) %>% 
+    mutate(sig = padj < 0.05 & abs(lfc) > 1) %>% 
+    mutate(tn = case_when(
+        withTSS & sig ~ tssName,
+        !(withTSS & sig) ~ NA_character_
+    )) %>% 
+    ggplot(aes(x = lfc, y = -log10(padj), col = sig, size = baseMean, label = tn)) +
+    geom_point(alpha = 0.5, show.legend = FALSE) + 
+    scale_color_manual(values = c(`FALSE` = "black", `TRUE` = "cornflowerblue")) +
+    xlim(-4.5, 4.5) +
+    ylim(0, 40) +
+    coord_equal(ratio = (9/40)) +
+    geom_hline(yintercept = -log10(0.05), col = 'blue', linetype = 'dashed') +
+    geom_vline(xintercept = c(-1, 1), col = 'blue', linetype = 'dashed') +
+    scale_size_area() +
+    ggrepel::geom_label_repel(show.legend = FALSE, 
+                             box.padding = 0.8, 
+                             max.overlaps = 1e+5, 
+                             size = 2, 
+                             color = "brown3",
+                             na.rm = TRUE
+                             ) +
+    ggthemes::theme_clean()
+
+ggsave(p, filename = "/Volumes/BlytheLab_Files/HTSeq/Natalie/paper_files/figures/Figure_6_GAF/volcano_by_bin_for_supplement.pdf", dpi = 300, device = "pdf", units = 'cm', height = 6, width = 6)
+```
+
+and by run, first with all tss labels...
+```{r}
+runsG %>% 
+    filter(!is.na(inDomain)) %>% 
+    mutate(sig = fishersp < 0.05 & abs(meanLFC) > 1) %>% 
+    ggplot(aes(x = meanLFC, 
+               y = -log10(fishersp), 
+               col = sig, 
+               size = meanBaseMean, 
+               label = withTSS)
+           ) +
+    geom_point(alpha = 0.8) + 
+    scale_color_manual(values = c("black","cornflowerblue")) +
+    xlim(-4.5, 4.5) +
+    ylim(0, 40) +
+    coord_equal(ratio = (9/40)) +
+    geom_hline(yintercept = -log10(0.05), col = 'blue', linetype = 'dashed') +
+    geom_vline(xintercept = c(-1, 1), col = 'blue', linetype = 'dashed') +
+    scale_size_area() +
+    ggrepel::geom_label_repel(show.legend = FALSE, 
+                             box.padding = 0.8, 
+                             max.overlaps = 1e+5, 
+                             size = 2, 
+                             color = "brown3",
+                             na.rm = TRUE
+                             )
+```
+
+```{r, echo = FALSE, eval = FALSE}
+resG %>% 
+    filter(!is.na(inDomain)) %>% 
+    filter(padj < 0.05 & (lfc) > 1)
+```
+
+
+and next, by filtering the tss of interest:
+
+```{r}
+favorites = c("esg", "sna", "en", "inv", "sisA")
+
+runsG %>% 
+    filter(!is.na(inDomain)) %>% 
+    mutate(sig = fishersp < 0.05 & abs(meanLFC) > 1) %>% 
+    mutate(wT = case_when(
+        withTSS %in% favorites ~ withTSS,
+        !withTSS %in% favorites ~ NA_character_
+    )) %>%
+    ggplot(aes(x = meanLFC, 
+               y = -log10(fishersp), 
+               col = sig, 
+               size = meanBaseMean, 
+               label = wT)
+           ) +
+    geom_point(alpha = 0.8) + 
+    scale_color_manual(values = c("black","cornflowerblue")) +
+    xlim(-4.5, 4.5) +
+    ylim(0, 40) +
+    coord_equal(ratio = (9/40)) +
+    geom_hline(yintercept = -log10(0.05), col = 'blue', linetype = 'dashed') +
+    geom_vline(xintercept = c(-1, 1), col = 'blue', linetype = 'dashed') +
+    scale_size_area() +
+    ggrepel::geom_label_repel(show.legend = FALSE, 
+                             box.padding = 0.8, 
+                             max.overlaps = 1e+5, 
+                             size = 2, 
+                             color = "brown3"
+                             )
+```
+
+Are there bin-wise or run-wise changes outside of domains?
+```{r}
+resG %>% 
+    filter(is.na(inDomain)) %>% 
+    mutate(sig = padj < 0.05 & abs(lfc) > 1) %>% 
+    mutate(tn = case_when(
+        withTSS & sig ~ tssName,
+        !(withTSS & sig) ~ NA_character_
+    )) %>% 
+    ggplot(aes(x = lfc, y = -log10(padj), col = sig, size = baseMean, label = tn)) +
+    geom_point(alpha = 0.8) + 
+    scale_color_manual(values = c("black","cornflowerblue")) +
+    xlim(-4.5, 4.5) +
+    ylim(0, 40) +
+    coord_equal(ratio = (9/40)) +
+    geom_hline(yintercept = -log10(0.05), col = 'blue', linetype = 'dashed') +
+    geom_vline(xintercept = c(-1, 1), col = 'blue', linetype = 'dashed') +
+    scale_size_area() +
+    ggrepel::geom_label_repel(show.legend = FALSE, 
+                             box.padding = 0.8, 
+                             max.overlaps = 1e+5, 
+                             size = 2, 
+                             color = "brown3",
+                             na.rm = TRUE
+                             )
+```
+
+By run, outside of domains:
+```{r}
+runsG %>% 
+    filter(is.na(inDomain)) %>% 
+    mutate(sig = fishersp < 0.05 & abs(meanLFC) > 1) %>% 
+    mutate(wT = case_when(
+        !is.na(withTSS) & sig ~ withTSS,
+        !(!is.na(withTSS) & sig) ~ NA_character_
+    )) %>% 
+    ggplot(aes(x = meanLFC, 
+               y = -log10(fishersp), 
+               col = sig, 
+               size = meanBaseMean, 
+               label = wT)
+           ) +
+    geom_point(alpha = 0.8) + 
+    scale_color_manual(values = c("black","cornflowerblue")) +
+    xlim(-4.5, 4.5) +
+    ylim(0, 40) +
+    coord_equal(ratio = (9/40)) +
+    geom_hline(yintercept = -log10(0.05), col = 'blue', linetype = 'dashed') +
+    geom_vline(xintercept = c(-1, 1), col = 'blue', linetype = 'dashed') +
+    scale_size_area() +
+    ggrepel::geom_label_repel(show.legend = FALSE, 
+                             box.padding = 0.8, 
+                             max.overlaps = 1e+5, 
+                             size = 2, 
+                             color = "brown3",
+                             na.rm = TRUE
+                             )
+```
+
+#### zld
+First, by bin:
+```{r}
+resZ %>% 
+    filter(!is.na(inDomain)) %>% 
+    mutate(sig = padj < 0.05 & abs(lfc) > 1) %>% 
+    mutate(tn = case_when(
+        withTSS & sig ~ tssName,
+        !(withTSS & sig) ~ NA_character_
+    )) %>% 
+    ggplot(aes(x = lfc, y = -log10(padj), col = sig, size = baseMean, label = tn)) +
+    geom_point(alpha = 0.8) + 
+    scale_color_manual(values = c("black","cornflowerblue")) +
+    xlim(-4.5, 4.5) +
+    ylim(0, 70) +
+    coord_equal(ratio = (9/70)) +
+    geom_hline(yintercept = -log10(0.05), col = 'blue', linetype = 'dashed') +
+    geom_vline(xintercept = c(-1, 1), col = 'blue', linetype = 'dashed') +
+    scale_size_area() +
+    ggrepel::geom_label_repel(show.legend = FALSE, 
+                             box.padding = 0.8, 
+                             max.overlaps = 1e+5, 
+                             size = 2, 
+                             color = "brown3",
+                             na.rm = TRUE
+                             )
+```
+
+```{r exporting a figure for the supplement, echo = FALSE, eval = FALSE}
+p = resZ %>% 
+    filter(!is.na(inDomain)) %>% 
+    mutate(sig = padj < 0.05 & abs(lfc) > 1) %>% 
+    mutate(tn = case_when(
+        withTSS & sig ~ tssName,
+        !(withTSS & sig) ~ NA_character_
+    )) %>% 
+    ggplot(aes(x = lfc, y = -log10(padj), col = sig, size = baseMean, label = tn)) +
+    geom_point(alpha = 0.5, show.legend = FALSE) + 
+    scale_color_manual(values = c("black","cornflowerblue")) +
+    xlim(-4.5, 4.5) +
+    ylim(0, 70) +
+    coord_equal(ratio = (9/70)) +
+    geom_hline(yintercept = -log10(0.05), col = 'blue', linetype = 'dashed') +
+    geom_vline(xintercept = c(-1, 1), col = 'blue', linetype = 'dashed') +
+    scale_size_area() +
+    ggrepel::geom_label_repel(show.legend = FALSE, 
+                             box.padding = 0.8, 
+                             max.overlaps = 1e+5, 
+                             size = 2, 
+                             color = "brown3",
+                             na.rm = TRUE
+                             ) +
+    ggthemes::theme_clean()
+
+ggsave(p, filename = "/Volumes/BlytheLab_Files/HTSeq/Natalie/paper_files/figures/Figure_7_Zld/zld_volcano_by_bin_for_supplement.pdf", dpi = 300, device = "pdf", units = 'cm', height = 10, width = 10)
+```
+
+```{r, echo = FALSE, eval = FALSE}
+resZ %>% 
+    filter(!is.na(inDomain)) %>% 
+    filter(padj < 0.05 & lfc > 1) %>% 
+    summarize(n = dplyr::n())
+
+resZ %>% 
+    filter(!is.na(inDomain)) %>% 
+    filter(padj < 0.05 & lfc < -1) %>% 
+    summarize(n = dplyr::n())
+```
+
+
+
+There are quite a few of these. What if we limit it to TSS-containing bins within domains?
+```{r}
+resZ %>% 
+    filter(!is.na(inDomain) & withTSS) %>% 
+    mutate(sig = padj < 0.05 & abs(lfc) > 1) %>% 
+    mutate(tn = case_when(
+        withTSS & sig ~ tssName,
+        !(withTSS & sig) ~ NA_character_
+    )) %>% 
+    ggplot(aes(x = lfc, y = -log10(padj), col = sig, size = baseMean, label = tn)) +
+    geom_point(alpha = 0.8) + 
+    scale_color_manual(values = c("black","cornflowerblue")) +
+    xlim(-4.5, 4.5) +
+    ylim(0, 40) +
+    coord_equal(ratio = (9/40)) +
+    geom_hline(yintercept = -log10(0.05), col = 'blue', linetype = 'dashed') +
+    geom_vline(xintercept = c(-1, 1), col = 'blue', linetype = 'dashed') +
+    scale_size_area() +
+    ggrepel::geom_label_repel(show.legend = FALSE, 
+                             box.padding = 0.2, 
+                             max.overlaps = 1e+5, 
+                             size = 2, 
+                             color = "brown3",
+                             na.rm = TRUE,
+                             min.segment.length = 0.1
+                             )
+```
+
+Let’s see a table of how this breaks down:
+```{r}
+ct = resZ %>% 
+    filter(withTSS) %>% 
+    mutate(sig = padj < 0.05 & abs(lfc) > 1, domain = !is.na(inDomain)) %>% 
+    group_by(sig, domain) %>% 
+    summarize(n = dplyr::n()) %>% 
+    pivot_wider(values_from = n, names_from = domain, names_prefix = "domain.") %>% 
+    ungroup() %>% 
+    arrange(desc(sig)) %>% 
+    mutate(sig = paste0("sig.", sig)) %>% 
+    select(sig, "domain.TRUE", "domain.FALSE") %>% 
+    column_to_rownames(var = "sig")
+ct
+```
+
+Here, we have 155 early zygotic TSS regions within PcG domains (left column in `ct`). 22 of these have significant changes in H3K27me3 in zelda mutants. Outside of domains (right column in `ct`), only 2 zygotic TSS have significant changes in H3K27me3. There are 133 TSS within domains that do not have significant changes in H3K27me3 following loss of Zelda. 
+
+Back to volcano plots. Now we plot by run, first with all tss labels...
+```{r}
+runsZ %>% 
+    filter(!is.na(inDomain)) %>% 
+    mutate(sig = fishersp < 0.05 & abs(meanLFC) > 1) %>% 
+    mutate(wT = case_when(
+        !is.na(withTSS) & sig ~ withTSS,
+        is.na(withTSS) & sig ~ NA_character_
+    )) %>%
+    ggplot(aes(x = meanLFC, 
+               y = -log10(fishersp), 
+               col = sig, 
+               size = meanBaseMean, 
+               label = wT)
+           ) +
+    geom_point(alpha = 0.8) + 
+    scale_color_manual(values = c("black","cornflowerblue")) +
+    xlim(-4.5, 4.5) +
+    ylim(0, 250) +
+    coord_equal(ratio = (9/250)) +
+    geom_hline(yintercept = -log10(0.05), col = 'blue', linetype = 'dashed') +
+    geom_vline(xintercept = c(-1, 1), col = 'blue', linetype = 'dashed') +
+    scale_size_area() +
+    ggrepel::geom_label_repel(show.legend = FALSE, 
+                             box.padding = 0.8, 
+                             max.overlaps = 1e+5, 
+                             size = 2, 
+                             color = "brown3"
+                             )
+```
+
+and next by filtering the tss of interest:
+```{r}
+favorites = c("esg", "sna", "sisA", "grh", "wg", "eve", "ind", "hbn", "sisA", "amos", "ato, CG9626", "sim", "wntD")
+
+runsZ %>% 
+    filter(!is.na(inDomain)) %>% 
+    mutate(wT = case_when(
+        withTSS %in% favorites ~ withTSS,
+        !withTSS %in% favorites ~ NA_character_
+    )) %>% 
+    mutate(sig = fishersp < 0.05 & abs(meanLFC) > 1) %>% 
+    ggplot(aes(x = meanLFC, 
+               y = -log10(fishersp), 
+               col = sig, 
+               size = meanBaseMean, 
+               label = wT)
+           ) +
+    geom_point(alpha = 0.8) + 
+    scale_color_manual(values = c("black","cornflowerblue")) +
+    xlim(-4.5, 4.5) +
+    ylim(0, 250) +
+    coord_equal(ratio = (9/250)) +
+    geom_hline(yintercept = -log10(0.05), col = 'blue', linetype = 'dashed') +
+    geom_vline(xintercept = c(-1, 1), col = 'blue', linetype = 'dashed') +
+    scale_size_area() +
+    ggrepel::geom_label_repel(show.legend = FALSE, 
+                             box.padding = 1, 
+                             max.overlaps = 1e+5, 
+                             size = 2, 
+                             color = "brown3"
+                             )
+```
+
+#### Zld with Pol2
+
+##### Number of early zygotic TSS with zelda-sensitive RNA Pol2
+How many total zygotic TSS survived the filtering for DESeq? There are 813 in the Chen source list. 
+```{r}
+resZp %>% 
+  filter(withTSS) %>% 
+  nrow()
+```
+
+798 make it through the RNA Pol2 DESeq2 analysis.
+How many have significantly reduced RNA Pol2 signal in Zelda mutants?
+```{r}
+resZp %>% 
+  filter(withTSS) %>% 
+  mutate(sigDown = lfc < -1 & padj < 0.05) %>% 
+  group_by(sigDown) %>% 
+  summarize(n = dplyr::n())
+```
+
+There are 269 of 798 regions that show a statistically significant reduction in Pol2 signal following loss of zelda (33.7%)
+
+#### How many zygotic TSS overlap with E(z) peaks?
+Overall, how many (significant or not) overlap with E(z) peaks?
+```{r}
+resZp %>% 
+  filter(withTSS) %>% 
+  group_by(withEz) %>% 
+  summarize(n = dplyr::n())
+```
+
+472 of 798 early zygotic TSS overlap with an E(z) peak. (59.1%)
+
+##### How many zygotic TSS reside in PcG domains?
+```{r}
+resZp %>% 
+  filter(withTSS, !is.na(inDomain)) %>% 
+  nrow()
+```
+
+```{r}
+ct = resZp %>% 
+    filter(withTSS) %>% 
+    mutate(sigDown = padj < 0.05 & lfc < -1, domain = !is.na(inDomain)) %>% 
+    group_by(sigDown, domain) %>% 
+    summarize(n = dplyr::n()) %>% 
+    pivot_wider(values_from = n, names_from = domain, names_prefix = "domain.") %>% 
+    ungroup() %>% 
+    arrange(desc(sigDown)) %>% 
+    mutate(sigDown = paste0("sigDown.", sigDown)) %>% 
+    select(sigDown, "domain.TRUE", "domain.FALSE") %>% 
+    column_to_rownames(var = "sigDown")
+ct
+```
+
+There are 155 early zygotic TSS within PcG domains, and there are 269 early zygotic TSS that depend on Zelda for Pol2 occupancy. The overlap between these groups is 66 TSS (42% of the TSS within PcG domains).
+```{r}
+fisher.test(ct)
+```
+
+There is a weak statistically significant enrichment for Zelda-dependent Pol2 within PcG domains. But this is not a particularly strong magnitude of effect (or statistical outcome).
+
+The volcano plot for the Pol2 DESeq looks like this:
+```{r}
+resZp %>% 
+    filter(!is.na(inDomain) & withTSS) %>% 
+    mutate(sig = padj < 0.05 & abs(lfc) > 1) %>% 
+    ggplot(aes(x = lfc, y = -log10(padj), col = sig, size = baseMean)) +
+    geom_point(alpha = 0.5) + 
+    scale_color_manual(values = c("black","red")) +
+    xlim(-7.5, 7.5) +
+    ylim(0, 70) +
+    coord_equal(ratio = (15/70)) +
+    geom_hline(yintercept = -log10(0.05), col = 'blue', linetype = 'dashed') +
+    geom_vline(xintercept = c(-1, 1), col = 'blue', linetype = 'dashed') +
+    scale_size_area()
+```
+
+It is over-busy to plot all of the TSS labels on this graph, so here are some 'favorites' labeled (based on genes that we saw above have significant differences at the level of H3K27me3).
+```{r}
+favorites = c("esg", "sna", "sisA", "grh", "wg", "eve", "ind", "hbn", "sisA", "amos", "ato", "sim", "wntD")
+
+resZp %>% 
+    filter(withTSS & !is.na(inDomain)) %>% 
+    mutate(wT = case_when(
+        tssName %in% favorites ~ tssName,
+        !tssName %in% favorites ~ NA_character_
+    )) %>% 
+    mutate(sig = padj < 0.05 & abs(lfc) > 1) %>% 
+    ggplot(aes(x = lfc, 
+               y = -log10(padj), 
+               col = sig, 
+               size = baseMean, 
+               label = wT)
+           ) +
+    geom_point(alpha = 0.5) + 
+    scale_color_manual(values = c("black","red")) +
+    xlim(-7.5, 7.5) +
+    ylim(0, 70) +
+    coord_equal(ratio = (15/70)) +
+    geom_hline(yintercept = -log10(0.05), col = 'blue', linetype = 'dashed') +
+    geom_vline(xintercept = c(-1, 1), col = 'blue', linetype = 'dashed') +
+    scale_size_area() +
+    ggrepel::geom_label_repel(show.legend = FALSE, 
+                             box.padding = 0.3, 
+                             max.overlaps = 1e+5, 
+                             size = 2
+                             ) +
+    labs(title = "DESeq: RNAPol2 over zyg TSS in PcG Domains", x = "LFC [zld/wt]" )
+```
+
+Most of the regions mentioned in the text have significant changes in RNA Pol2. Snail continues to be expressed, albeit at a slightly lower level of expression, in Zelda mutants (Nien PLoS Genet. 2011). Wingless hasn’t been measured by in situ, but wingless is paused, and this lack of a change could reflect loss of a signal in the gene body that we aren’t picking up here. Grainyhead is not expressed robustly until gastrula stages, so ‘it isn’t on yet’. I believe this is also the case for esg. Homeobrain is a Bicoid target, so it may not care whether zelda is around for expression, like other gap genes like Hb and Kr.
+
+##### What is the magnitude of change for H3K27me3 for bins containing TSS that are zelda-dependent for RNA Pol2 recruitment?
+If we take the set of TSS that have significantly reduced RNA Pol2 in a zelda mutant, what is the distribution of log2(FoldChanges) in H3K27me3?
+```{r}
+downTSS = resZp %>% 
+    filter(withTSS & lfc < -1 & padj <0.05) %>% 
+    select(tssName)
+downTSS = downTSS[,1]
+
+tt = resZ %>% 
+    filter(tssName %in% downTSS) %>% 
+    mutate(domain = !is.na(inDomain)) %>% 
+    mutate(wT = case_when(
+        abs(lfc) > 1 ~ tssName,
+        abs(lfc) <=1 ~ NA_character_
+    )) %>% 
+    group_by(domain) %>% 
+    ggplot(aes(x = lfc, y = domain, label = wT)) +
+    ggbeeswarm::geom_beeswarm(groupOnX = FALSE, alpha = 0.5) +
+    geom_vline(xintercept = c(-1, 1), linetype = 'dotted', col = 'blue') +
+    ggrepel::geom_text_repel(show.legend = FALSE, 
+                             box.padding = 0.5, 
+                             max.overlaps = 1e+5, 
+                             size = 2, 
+                             na.rm = TRUE, 
+                             min.segment.length = 0.1, 
+                             color = 'brown3'
+                             ) +
+    xlim(-3.5, 3.5) +
+    coord_equal(ratio = 3/2) +
+    labs(y = "PcG Domain Membership", x = "H3K27me3 LFC") +
+    ggthemes::theme_clean()
+tt 
+```
+
+The plot above shows a number of things. For the set of zld-dependent TSS within PcG domains, these are TSS that have statistically significant losses in Pol2 recruitment that happen to fall within PcG domains, and therefore are associated with some degree of H3K27me3. Because this mark is theoretically associated with transcriptional repression, one might expect that reduced gene activity (here estimated by the recruitment of Pol2) would result in increased H3K27me3. But we don't see that except at the *zen* and *eve* loci. Instead we see that most of these sites that lose Pol2 also lose H3K27me3, almost as if Zelda is responsible for putting these sites into play and enabling them to either recruit Pol2 or establish H3K27me3. 
+
+Another thing that is going on is that for TSS that require zelda for Pol2 recruitment that sit outside of PcG domains, as reckoned in a wild-type embryo, we do not see a tremendous acquisition of H3K27me3. Why might we have expected this? Many of these sites harbor E(z) peaks right at the TSS. Does loss of Zelda uncover some kind of latent competency for these sites to acquire H3K27me3? Apparently not.
+
+##### How many Zelda-dependent TSS outside of PcG domains overlap with E(z) peaks?
+```{r}
+resZp %>% 
+  filter(tssName %in% downTSS) %>% 
+  mutate(domain = !is.na(inDomain)) %>% 
+  group_by(domain, withEz) %>% 
+  summarize(n = dplyr::n())
+
+```
+
+OK, all 66 of the Zelda-sensitive TSS within domains coincide with an E(z) peak. This is reassuring. Of the 203 zelda-sensitive TSS outside of PcG domains, 134 of them coincide with an E(z) peak (66%).
+
+## Additional numbers quoted in the results section
+### GAF
+##### Number of bins within PcG domains for the GAF analysis:
+```{r}
+sum(!is.na(bins2k$inDomain))
+```
+
+Overall within the starting bin set there are 3997 bins within domains, but we filtered for low counts. 
+```{r}
+sum(!is.na(resG$inDomain))
+```
+
+There are 3883 bins in domains for the GAF analysis.
+
+##### Number of bins that pass significance testing in the GAF analysis
+At the level of bins, we say that "we observe only a limited number of 2 kb bins within PcG domains with modest decreases in H3K27me3 signal following GAF knockdown, and none of these pass significance testing."
+```{r}
+resG %>% 
+  filter(!is.na(inDomain)) %>% 
+  mutate(sigDown = lfc < -1 & padj < 0.05) %>% 
+  group_by(sigDown) %>% 
+  summarize(n = dplyr::n())
+```
+
+All of the down regions are not significantly down. There are however some regions that have a p-value less than 0.05 and an lfc < 0, buf fail to reach the magnitude of effect cutoff.
+```{r}
+resG %>% 
+  filter(!is.na(inDomain)) %>% 
+  mutate(pDown = lfc < 0 & padj < 0.05) %>% 
+  group_by(pDown) %>% 
+  summarize(n = dplyr::n())
+```
+
+Here we have 36 bins that fall into this category. 
+
+In terms of regions that go "up", we have a few that pass both p-value and magnitude of effect thresholds:
+```{r}
+resG %>% 
+  filter(!is.na(inDomain)) %>% 
+  mutate(sigUp = lfc > 1 & padj < 0.05) %>% 
+  group_by(sigUp) %>% 
+  summarize(n = dplyr::n())
+```
+
+There are 8 individual 2kb bins that fall into this category.
+
+And at the level of "any significant"?
+```{r}
+resG %>% 
+  filter(!is.na(inDomain)) %>% 
+  mutate(pUp = lfc > 0 & padj < 0.05) %>% 
+  group_by(pUp) %>% 
+  summarize(n = dplyr::n())
+```
+There are 377 regions that have adjusted p-values below the threshold, just not necessarily with a significant magnitude of effect.
+
+##### Runs of bins in the GAF experiment
+We report the number of "runs" that we get by considering consecutive bins with adjusted p-values less than 0.05:
+```{r}
+runsG %>% 
+  nrow()
+```
+
+Overall, whether within PcG domains or outside of domains, there are 361 runs.
+
+What is their size distribution?
+```{r}
+range(width(GRanges(runsG)))
+```
+
+How many are within Domains? 
+```{r}
+runsG %>% 
+  filter(!is.na(inDomain)) %>% 
+  nrow
+```
+
+234 have overlap with a PcG domain. 
+How many different domains are represented in this list? 
+```{r}
+runsG %>% 
+  filter(!is.na(inDomain)) %>% 
+  group_by(inDomain) %>% 
+  summarize(n = dplyr::n()) %>% 
+  nrow()
+```
+
+124 different domains contain one or more runs of 2 kb bins with modest localized changes in H3K27me3 following GAF knockdown. However, we need to check whether any of these contain both increases and decreases in H3K27me3 signal.
+
+```{r}
+runsG %>% 
+  filter(!is.na(inDomain)) %>% 
+  mutate(ups = meanLFC > 0, downs = meanLFC < 0) %>% 
+  group_by(inDomain) %>% 
+  summarize(boths = any(ups) & any(downs)) %>% 
+  filter(boths)
+```
+2 domains contain both increases and decreases in signal. 
+
+The first one corresponds to a domain that contains *dac*. The second one corresponds to a domain that contains a bunch of lncRNAs next to an olfactory receptor. Neither of these are of particular functional interest to this investigator. 
+
+How many Domains have net GAF-dependent reductions in signal?
+```{r}
+runsG %>% 
+  filter(!is.na(inDomain)) %>% 
+  filter(meanLFC < 0) %>% 
+  group_by(inDomain) %>% 
+  summarize(n = dplyr::n()) %>% 
+  nrow()
+```
+
+There are 17 Domains with GAF dependent reductions in signal. How many distinct runs comprise this set?
+```{r}
+runsG %>% 
+  filter(!is.na(inDomain)) %>% 
+  filter(meanLFC < 0) %>% 
+  nrow()
+```
+
+23 runs total split over 17 domains have GAF-dependent reductions in signal. How many are associated with a GAF peak? 
+
+```{r}
+runsG %>% 
+  filter(!is.na(inDomain)) %>% 
+  filter(meanLFC < 0) %>% 
+  summarize(n = sum(withGAF))
+```
+
+There are 19 of 23 runs that contain a GAF peak. "The effect is likely to be direct."
+
+How many gains in K27me3 do we see in GAF knockdowns?
+```{r}
+runsG %>% 
+    filter(!is.na(inDomain)) %>% 
+    filter(meanLFC > 0) %>% 
+    group_by(inDomain) %>%
+    summarize(n = dplyr::n()) %>% 
+    nrow()
+```
+
+And what is the likelihood of this being a direct effect of GAF?
+```{r}
+runsG %>% 
+    filter(!is.na(inDomain)) %>% 
+    filter(meanLFC > 0) %>% 
+    summarize(n = sum(withGAF))
+```
+
+All of these runs have a GAF peak, so this is very likely to be a direct effect of GAF. 
+
+### Zelda
+##### Number of bins within domains for this analysis?
+```{r}
+resZ %>% 
+  filter(!is.na(inDomain)) %>% 
+  nrow()
+```
+
+##### How many show statistically significant reductions in H3K27me3?
+```{r}
+resZ %>% 
+    filter(!is.na(inDomain) & lfc < -1 & padj < 0.05) %>% 
+    nrow()
+```
+```{r}
+226/3746
+```
+
+six percent of bins within domains show statisticially significant reductions in H3K27me3. Not a huge amount, overall.
+
+##### Howman bins within domains show increases in H3K27me3?
+```{r}
+resZ %>% 
+    filter(!is.na(inDomain) & lfc >1  & padj < 0.05) %>% 
+    nrow()
+```
+```{r}
+62/3746
+```
+
+##### How many runs of bins are there?
+```{r}
+runsZ %>% 
+    filter(!is.na(inDomain)) %>% 
+    nrow()
+```
+
+##### What is their size range?
+```{r}
+range(width(GRanges(runsZ %>% filter(!is.na(inDomain)))))
+```
+
+##### How many runs show moderate to large increases in H3K27me3?
+```{r}
+runsZ %>% 
+    filter(!is.na(inDomain) & meanLFC > 0) %>% 
+    nrow()
+```
+```{r}
+301/546
+```
+
+##### How many runs have mean LFC > 1?
+```{r}
+runsZ %>% 
+    filter(!is.na(inDomain) & meanLFC > 1) %>% 
+    nrow()
+```
+```{r}
+9/546
+```
+
+##### How many runs have moderate to large reductions in H3K27me3?
+```{r}
+runsZ %>% 
+    filter(!is.na(inDomain) & meanLFC < 0) %>% 
+    nrow()
+```
+```{r}
+245/546
+```
+
+##### How many runs show large magnitude decreases in H3K27me3?
+```{r}
+runsZ %>% 
+    filter(!is.na(inDomain) & meanLFC < -1) %>% 
+    nrow()
+```
+```{r}
+29/546
+```
+
+##### How many PcG domains can the runs with increases be associated with?
+```{r}
+runsZ %>% 
+    filter(!is.na(inDomain) & meanLFC > 1) %>% 
+    group_by(inDomain) %>% 
+    summarize(n = n()) %>% 
+    nrow()
+```
+Nine domains have runs that show increases. 
+```{r}
+range(width(GRanges(runsZ %>% filter(!is.na(inDomain) & meanLFC > 1))))
+```
+Ranging in width from 2k to 34k bp in size.
+
+```{r}
+runsZ %>% 
+  filter(!is.na(inDomain) & meanLFC > 1) %>% 
+  select(inDomain, withTSS)
+```
+Five of the runs/domains that show increases contain early zygotic TSS. These correspond to wg, esg, eve, grh, and bab2.
+
+##### How many domains are represented by runs with Zelda dependent decreases?
+```{r}
+runsZ %>% 
+    filter(!is.na(inDomain) & meanLFC < -1) %>% 
+    group_by(inDomain) %>% 
+    summarize(n = n()) %>% 
+    nrow()
+```
+
+There are 29 domains associated with zelda dependent decreases. 
+```{r}
+range(width(GRanges(runsZ %>% filter(!is.na(inDomain) & meanLFC < -1))))
+```
+Ranging in size from 6k to 46k bp in size. 
+```{r}
+runsZ %>% 
+  filter(!is.na(inDomain) & meanLFC < -1) %>% 
+  filter(!is.na(withTSS)) %>% 
+  select(withTSS)
+```
+
+Twelve of these significantly down domains contains an early zygotic TSS. 
+
+##### How correlated are changes between H3K27me3 and H2Aub in Zelda mutants?
+```{r}
+comp = resZ
+comp$ub = resZ2a$lfc
+comp %>% 
+  filter(!is.na(inDomain)) %>% 
+  ggplot(aes(x = lfc, y = ub)) +
+  geom_point(alpha = 0.25) +
+    geom_smooth(method = "lm", se = FALSE, color = "red", linetype = 'dashed') +
+  geom_abline(slope = 1, intercept = 0, col = 'grey', linetype = 'dashed') +
+  coord_equal() +
+  xlim(-5,5) +
+  ylim(-5,5) +
+  labs(x = "H3K27me3 lfc (zld/wt)", y = "H2Aub lfc (zld/wt)", title = "correlation between PcG modifications") +
+  theme_bw()
+```
+
+```{r generating a plot for the supplement, eval = FALSE, echo = FALSE}
+p = comp %>% 
+  filter(!is.na(inDomain)) %>% 
+  ggplot(aes(x = lfc, y = ub)) +
+  geom_point(alpha = 0.25) +
+    geom_smooth(method = "lm", se = FALSE, color = "red", linetype = 'dashed') +
+  geom_abline(slope = 1, intercept = 0, col = 'grey', linetype = 'dashed') +
+  coord_equal() +
+  xlim(-5,5) +
+  ylim(-5,5) +
+  labs(x = "H3K27me3 lfc (zld/wt)", y = "H2Aub lfc (zld/wt)", title = "correlation between PcG modifications") +
+  theme_bw()
+
+ggsave(p, filename = "/Volumes/BlytheLab_Files/HTSeq/Natalie/paper_files/figures/Figure_7_Zld/zld_K27_and_H2Aub_correlation.pdf", dpi = 300, device = "pdf", units = 'cm', height = 8, width = 8)
+```
+
+
+We can estimate whether the slope is significantly different than 1 by performing a t-test on the output of the linear fitting. 
+
+```{r}
+fit = lm(ub ~ lfc, data = comp %>% 
+             filter(!is.na(inDomain)) 
+         )
+summary(fit)
+```
+
+The slope of the regression is 0.68, which is pretty far off from 1, which would be expected if H2Aub and H3K27me3 responded identically to loss of zelda. 
+
+```{r}
+slope_est = coef(fit)[["lfc"]]
+slope_se = summary(fit)$coefficients["lfc", "Std. Error"]
+t_val = (slope_est - 1) / slope_se
+df = df.residual(fit)
+p_val = 2 * pt(-abs(t_val), df)
+
+p_val
+```
+
+The t-test p-value for the slope (null hypothesis is = 1) is pretty convincingly small, so we can reject the null hypothesis. 
+
+```{r}
+confint(fit)
+```
+
+Another gut-check is to check whether the 95% confidence interval spans 0 for the intercept and 1 for the slope. Nope. 
+
+There is at least a clear positive correlation between these two marks in terms of log fold change comparing zelda and wild-type embryos. What is the correlation coefficient?
+
+```{r}
+comp %>% 
+  filter(!is.na(inDomain)) %>% 
+  summarize(cor = cor(lfc, ub, method = 'spearman'))
+```
+
+
+
+
+```{r}
+sessionInfo()
+```
+
+
